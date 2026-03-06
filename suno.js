@@ -4,16 +4,9 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
-const API_BASE = 'https://api.sunoapi.org/api/v1';
 const AUDIO_DIR = path.join(__dirname, 'data', 'audio');
 const IMAGE_DIR = path.join(__dirname, 'data', 'images');
 const TRACKS_PATH = path.join(__dirname, 'data', 'tracks.json');
-
-function getApiKey() {
-  const key = process.env.SUNO_API_KEY;
-  if (!key) throw new Error('SUNO_API_KEY not set');
-  return key;
-}
 
 function ensureDirs() {
   fs.mkdirSync(AUDIO_DIR, { recursive: true });
@@ -29,31 +22,26 @@ function saveTracks(tracks) {
   fs.writeFileSync(TRACKS_PATH, JSON.stringify(tracks, null, 2) + '\n');
 }
 
-// Fetch JSON from the Suno API
-async function apiFetch(endpoint) {
-  const url = `${API_BASE}${endpoint}`;
-  const res = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${getApiKey()}` }
-  });
-  if (!res.ok) throw new Error(`Suno API ${res.status}: ${await res.text()}`);
-  return res.json();
-}
-
-// Download a URL to a local file, returns the local path
+// Download a URL to a local file
 function downloadFile(url, destPath) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destPath);
+    const parsed = new URL(url);
+    const options = {
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    };
     const get = url.startsWith('https') ? https.get : require('http').get;
-    get(url, (res) => {
+    get(options, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        // Follow redirect
         file.close();
         fs.unlinkSync(destPath);
         return downloadFile(res.headers.location, destPath).then(resolve, reject);
       }
       if (res.statusCode !== 200) {
         file.close();
-        fs.unlinkSync(destPath);
+        if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
         return reject(new Error(`Download failed: ${res.statusCode}`));
       }
       res.pipe(file);
@@ -66,92 +54,138 @@ function downloadFile(url, destPath) {
   });
 }
 
-// Fetch task info and extract track data
-async function fetchTaskInfo(taskId) {
-  const result = await apiFetch(`/generate/record-info?taskId=${encodeURIComponent(taskId)}`);
-  if (!result.data) throw new Error('No data in response');
-  return result.data;
+// Extract song ID from various Suno URL formats:
+//   https://suno.com/s/wiZGYuKCdZhYOJcG          (share link — needs redirect)
+//   https://suno.com/song/7bc3fe4e-...             (direct song page)
+//   7bc3fe4e-4850-4730-bc28-cb049f6d7b66           (raw UUID)
+function parseSongId(input) {
+  input = input.trim();
+  // Raw UUID
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input)) {
+    return input;
+  }
+  // Direct song URL
+  const songMatch = input.match(/suno\.com\/song\/([0-9a-f-]{36})/i);
+  if (songMatch) return songMatch[1];
+  // Share URL — we'll resolve it later
+  return null;
 }
 
-// Import a track by task ID: fetch metadata, download audio + image, add to tracks.json
-async function importTrack(taskId) {
+// Follow a share URL redirect to get the song ID
+function resolveShareUrl(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      res.resume(); // drain
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        let loc = res.headers.location;
+        // Handle relative redirects
+        if (loc.startsWith('/')) {
+          const base = new URL(url);
+          loc = `${base.protocol}//${base.host}${loc}`;
+        }
+        const id = parseSongId(loc);
+        if (id) return resolve(id);
+        return resolveShareUrl(loc).then(resolve, reject);
+      }
+      reject(new Error('Could not resolve share URL to a song ID'));
+    }).on('error', reject);
+  });
+}
+
+// Scrape metadata from a Suno song page using fetch (server-side)
+// Returns { title, tags, duration, imageUrl }
+async function fetchPageMeta(songId) {
+  const url = `https://suno.com/song/${songId}`;
+  const res = await fetch(url);
+  const html = await res.text();
+
+  const title = html.match(/<meta property="og:title" content="([^"]+)"/)?.[1] || 'Untitled';
+  const imageUrl = html.match(/<meta property="og:image" content="([^"]+)"/)?.[1] || '';
+
+  // Tags from style links: /style/Dream%20Pop etc
+  const tagMatches = [...html.matchAll(/\/style\/([^"]+)"/g)];
+  const tags = [...new Set(tagMatches.map(m => decodeURIComponent(m[1])))];
+
+  // Duration from the playbar area (e.g. "3:11")
+  const durationMatch = html.match(/"duration":\s*"?(\d+(?:\.\d+)?)"?/);
+  let duration = '';
+  if (durationMatch) {
+    const secs = parseFloat(durationMatch[1]);
+    duration = `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
+  }
+
+  return { title, tags, duration, imageUrl };
+}
+
+// Import a song by URL, song ID, or share link
+async function importSong(input) {
   ensureDirs();
 
-  console.log(`Fetching task info for ${taskId}...`);
-  const taskData = await fetchTaskInfo(taskId);
-
-  if (taskData.status !== 'SUCCESS') {
-    throw new Error(`Task status is ${taskData.status}, not SUCCESS`);
+  let songId = parseSongId(input);
+  if (!songId) {
+    // Must be a share URL
+    console.log('Resolving share URL...');
+    songId = await resolveShareUrl(input);
   }
-
-  const songs = taskData.response?.data || [];
-  if (!songs.length) throw new Error('No songs found in task response');
+  console.log(`Song ID: ${songId}`);
 
   const tracks = loadTracks();
-  const imported = [];
-
-  for (const song of songs) {
-    const id = song.id;
-
-    // Skip if already imported
-    if (tracks.some(t => t.sunoId === id)) {
-      console.log(`  Skipping ${song.title || id} — already imported`);
-      continue;
-    }
-
-    console.log(`  Importing: ${song.title || id}`);
-
-    // Download audio
-    let audioFile = '';
-    if (song.audio_url) {
-      const ext = song.audio_url.includes('.wav') ? 'wav' : 'mp3';
-      audioFile = `${id}.${ext}`;
-      console.log(`    Downloading audio...`);
-      await downloadFile(song.audio_url, path.join(AUDIO_DIR, audioFile));
-    }
-
-    // Download image
-    let imageFile = '';
-    if (song.image_url) {
-      const imgExt = song.image_url.includes('.png') ? 'png' : 'jpg';
-      imageFile = `${id}.${imgExt}`;
-      console.log(`    Downloading image...`);
-      await downloadFile(song.image_url, path.join(IMAGE_DIR, imageFile));
-    }
-
-    const duration = song.duration
-      ? `${Math.floor(song.duration / 60)}:${String(Math.floor(song.duration % 60)).padStart(2, '0')}`
-      : '';
-
-    const tags = song.tags
-      ? song.tags.split(',').map(t => t.trim()).filter(Boolean)
-      : [];
-
-    const track = {
-      sunoId: id,
-      title: song.title || 'Untitled',
-      artist: song.artist || '',
-      tags,
-      duration,
-      sunoUrl: `https://suno.com/song/${id}`,
-      audioUrl: audioFile ? `/audio/${audioFile}` : '',
-      image: imageFile ? `/images/${imageFile}` : '',
-    };
-
-    tracks.push(track);
-    imported.push(track);
-    console.log(`    Done: ${track.title}`);
+  if (tracks.some(t => t.sunoId === songId)) {
+    console.log('Already imported, skipping.');
+    return null;
   }
 
+  // Fetch metadata from the page
+  console.log('Fetching metadata...');
+  const meta = await fetchPageMeta(songId);
+  console.log(`  Title: ${meta.title}`);
+  console.log(`  Tags: ${meta.tags.join(', ')}`);
+
+  // Download audio from CDN
+  const audioFile = `${songId}.mp3`;
+  const audioUrl = `https://cdn1.suno.ai/${songId}.mp3`;
+  console.log('Downloading audio...');
+  await downloadFile(audioUrl, path.join(AUDIO_DIR, audioFile));
+
+  // Download cover image
+  let imageFile = '';
+  const imageUrl = `https://cdn2.suno.ai/image_${songId}.jpeg`;
+  {
+    imageFile = `${songId}.jpeg`;
+    console.log('Downloading image...');
+    await downloadFile(imageUrl, path.join(IMAGE_DIR, imageFile));
+  }
+
+  const track = {
+    sunoId: songId,
+    title: meta.title,
+    artist: '',
+    tags: meta.tags,
+    duration: meta.duration,
+    sunoUrl: `https://suno.com/song/${songId}`,
+    audioUrl: `/audio/${audioFile}`,
+    image: imageFile ? `/images/${imageFile}` : '',
+  };
+
+  tracks.push(track);
   saveTracks(tracks);
-  console.log(`Imported ${imported.length} track(s). Total: ${tracks.length}`);
-  return imported;
+  console.log(`Imported: ${track.title}`);
+  return track;
 }
 
-// Check remaining API credits
-async function checkCredits() {
-  const result = await apiFetch('/get-credits');
-  return result.data?.credits;
-}
+module.exports = { importSong, loadTracks, saveTracks, parseSongId };
 
-module.exports = { importTrack, fetchTaskInfo, checkCredits, loadTracks, saveTracks };
+// CLI: node suno.js <url-or-id>
+if (require.main === module) {
+  const input = process.argv[2];
+  if (!input) {
+    console.log('Usage: node suno.js <suno-url-or-song-id>');
+    process.exit(1);
+  }
+  importSong(input).then(track => {
+    if (track) console.log('\nDone! Restart the server to see it.');
+  }).catch(err => {
+    console.error('Error:', err.message);
+    process.exit(1);
+  });
+}

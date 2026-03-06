@@ -8,7 +8,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { importTrack, checkCredits } = require('./suno');
+const { importSong } = require('./suno');
 
 const PORT = process.env.PORT || 3000;
 
@@ -55,25 +55,16 @@ app.get('/api/tracks', (req, res) => {
   }
 });
 
-// API: import a track by Suno task ID
+// API: import a song by Suno URL or song ID
 app.post('/api/import', async (req, res) => {
-  const { taskId } = req.body;
-  if (!taskId) return res.status(400).json({ error: 'taskId is required' });
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: 'url is required' });
   try {
-    const imported = await importTrack(taskId);
-    res.json({ ok: true, imported });
+    const track = await importSong(url);
+    if (!track) return res.json({ ok: true, skipped: true, message: 'Already imported' });
+    res.json({ ok: true, track });
   } catch (err) {
     console.error('Import error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// API: check Suno credits
-app.get('/api/credits', async (req, res) => {
-  try {
-    const credits = await checkCredits();
-    res.json({ credits });
-  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
