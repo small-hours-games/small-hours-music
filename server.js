@@ -8,6 +8,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { importTrack, checkCredits } = require('./suno');
 
 const PORT = process.env.PORT || 3000;
 
@@ -36,6 +37,10 @@ const PUBLIC_SCHEME = DOMAIN ? 'https' : SCHEME;
 const app = express();
 app.use(express.json());
 
+// Serve downloaded audio and images from data/
+app.use('/audio',  express.static(path.join(__dirname, 'data', 'audio')));
+app.use('/images', express.static(path.join(__dirname, 'data', 'images')));
+
 // API: list tracks
 app.get('/api/tracks', (req, res) => {
   const tracksPath = path.join(__dirname, 'data', 'tracks.json');
@@ -47,6 +52,29 @@ app.get('/api/tracks', (req, res) => {
     res.json(tracks);
   } catch {
     res.status(500).json({ error: 'Failed to load tracks' });
+  }
+});
+
+// API: import a track by Suno task ID
+app.post('/api/import', async (req, res) => {
+  const { taskId } = req.body;
+  if (!taskId) return res.status(400).json({ error: 'taskId is required' });
+  try {
+    const imported = await importTrack(taskId);
+    res.json({ ok: true, imported });
+  } catch (err) {
+    console.error('Import error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: check Suno credits
+app.get('/api/credits', async (req, res) => {
+  try {
+    const credits = await checkCredits();
+    res.json({ credits });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
