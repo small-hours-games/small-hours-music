@@ -1,0 +1,17 @@
+name: small-hours-music
+
+services:
+  music:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+
+    env_file:
+      - path: .env
+        required: false
+
+    volumes:
+      - ./:/app
+      - /app/node_modules
+      - ./data:/app/data
+      - ./certs:/app/certs:ro
