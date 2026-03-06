@@ -268,6 +268,75 @@
 
     /* Bottom padding for player bar */
     .app.has-player { padding-bottom: 7rem; }
+
+    /* Admin import */
+    .admin-toggle {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      cursor: pointer;
+      padding: 0.3rem 0.6rem;
+      border-radius: var(--radius-sm);
+      transition: color 0.2s;
+      margin: 0 auto;
+      display: block;
+    }
+    .admin-toggle:hover { color: var(--text-dim); }
+
+    .admin-panel {
+      display: none;
+      margin-bottom: 1.5rem;
+      padding: 1rem;
+      background: var(--card);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: var(--radius-md);
+      animation: fadeIn 0.2s ease-out;
+    }
+    .admin-panel.open { display: block; }
+
+    .import-row {
+      display: flex;
+      gap: 0.5rem;
+    }
+    .import-input {
+      flex: 1;
+      min-width: 0;
+      padding: 0.6rem 0.8rem;
+      font-size: 0.85rem;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      border: 1.5px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius-sm);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .import-input:focus { border-color: var(--accent); }
+    .import-input::placeholder { color: var(--text-muted); }
+
+    .import-btn {
+      padding: 0.6rem 1.2rem;
+      font-size: 0.85rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), var(--neon));
+      color: #fff;
+      border: none;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: transform 0.1s, opacity 0.2s;
+    }
+    .import-btn:hover { transform: translateY(-1px); }
+    .import-btn:active { transform: scale(0.97); }
+    .import-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    .import-status {
+      font-size: 0.8rem;
+      margin-top: 0.5rem;
+      min-height: 1.2em;
+    }
+    .import-status.ok { color: var(--neon); }
+    .import-status.err { color: var(--accent2); }
   </style>
 </head>
 <body class="bg-mesh bg-noise">
@@ -276,6 +345,16 @@
   <div class="header">
     <div class="header-title gradient-text">Small Hours</div>
     <div class="header-sub">Music</div>
+  </div>
+
+  <button class="admin-toggle" id="admin-toggle">+ Add song</button>
+  <div class="admin-panel" id="admin-panel">
+    <div class="import-row">
+      <input class="import-input" id="import-input" type="text"
+        placeholder="Paste Suno URL or song ID" autocomplete="off" spellcheck="false">
+      <button class="import-btn" id="import-btn">Import</button>
+    </div>
+    <div class="import-status" id="import-status"></div>
   </div>
 
   <div class="track-list" id="track-list">
@@ -456,14 +535,68 @@
     audio.currentTime = pct * audio.duration;
   });
 
+  // Admin import
+  const adminToggle = document.getElementById('admin-toggle');
+  const adminPanel = document.getElementById('admin-panel');
+  const importInput = document.getElementById('import-input');
+  const importBtn = document.getElementById('import-btn');
+  const importStatus = document.getElementById('import-status');
+
+  adminToggle.addEventListener('click', () => {
+    adminPanel.classList.toggle('open');
+    adminToggle.textContent = adminPanel.classList.contains('open') ? '- Add song' : '+ Add song';
+  });
+
+  importInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doImport(); });
+  importBtn.addEventListener('click', doImport);
+
+  async function doImport() {
+    const url = importInput.value.trim();
+    if (!url) return;
+    importBtn.disabled = true;
+    importBtn.textContent = 'Importing...';
+    importStatus.textContent = '';
+    importStatus.className = 'import-status';
+    try {
+      const res = await fetch('/api/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Import failed');
+      if (data.skipped) {
+        importStatus.textContent = 'Already imported.';
+        importStatus.classList.add('ok');
+      } else {
+        importStatus.textContent = `Imported: ${data.track.title}`;
+        importStatus.classList.add('ok');
+        importInput.value = '';
+        // Reload track list
+        reloadTracks();
+      }
+    } catch (err) {
+      importStatus.textContent = err.message;
+      importStatus.classList.add('err');
+    }
+    importBtn.disabled = false;
+    importBtn.textContent = 'Import';
+  }
+
+  function reloadTracks() {
+    fetch('/api/tracks')
+      .then(r => r.json())
+      .then(data => {
+        tracks = data;
+        // Clear existing track items (keep empty state)
+        trackListEl.querySelectorAll('.track-item').forEach(el => el.remove());
+        renderTracks();
+        updatePlayingState();
+      });
+  }
+
   // Load tracks
-  fetch('/api/tracks')
-    .then(r => r.json())
-    .then(data => {
-      tracks = data;
-      renderTracks();
-    })
-    .catch(() => {});
+  reloadTracks();
 </script>
 </body>
 </html>
