@@ -255,16 +255,91 @@
     }
 
     /* Suno link */
-    .track-link {
+    .track-link, .track-lyrics-btn {
       color: var(--text-muted);
       text-decoration: none;
       flex-shrink: 0;
       padding: 0.3rem;
       border-radius: 50%;
       transition: color 0.2s;
+      background: none;
+      border: none;
+      cursor: pointer;
     }
-    .track-link:hover { color: var(--accent); }
-    .track-link svg { width: 16px; height: 16px; }
+    .track-link:hover, .track-lyrics-btn:hover { color: var(--accent); }
+    .track-link svg, .track-lyrics-btn svg { width: 16px; height: 16px; }
+
+    /* Lyrics modal */
+    .lyrics-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(8px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      animation: fadeIn 0.2s ease-out;
+    }
+    .lyrics-overlay.open { display: flex; }
+    .lyrics-panel {
+      background: rgba(15, 14, 23, 0.97);
+      border: 1px solid rgba(127, 90, 240, 0.2);
+      border-radius: var(--radius-lg, 16px);
+      max-width: 520px;
+      width: 90%;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      animation: fadeIn 0.25s ease-out;
+    }
+    .lyrics-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 1.2rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .lyrics-title {
+      font-weight: 700;
+      font-size: 1rem;
+    }
+    .lyrics-close {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 0.3rem;
+      border-radius: 50%;
+      font-size: 1.2rem;
+      line-height: 1;
+      transition: color 0.2s;
+    }
+    .lyrics-close:hover { color: var(--text); }
+    .lyrics-body {
+      padding: 1.2rem;
+      overflow-y: auto;
+      font-size: 0.9rem;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      color: var(--text-dim);
+    }
+    .lyrics-prompt {
+      padding: 0 1.2rem 1rem;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      border-top: 1px solid rgba(255, 255, 255, 0.04);
+      padding-top: 0.8rem;
+      margin-top: auto;
+    }
+    .lyrics-prompt-label {
+      font-weight: 600;
+      color: var(--accent);
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.3rem;
+    }
 
     /* Bottom padding for player bar */
     .app.has-player { padding-bottom: 7rem; }
@@ -393,6 +468,20 @@
   </div>
 </div>
 
+<div class="lyrics-overlay" id="lyrics-overlay">
+  <div class="lyrics-panel">
+    <div class="lyrics-header">
+      <div class="lyrics-title" id="lyrics-modal-title">Lyrics</div>
+      <button class="lyrics-close" id="lyrics-close">&times;</button>
+    </div>
+    <div class="lyrics-body" id="lyrics-body">Loading...</div>
+    <div class="lyrics-prompt" id="lyrics-prompt" style="display:none">
+      <div class="lyrics-prompt-label">Generation Prompt</div>
+      <div id="lyrics-prompt-text"></div>
+    </div>
+  </div>
+</div>
+
 <audio id="audio"></audio>
 
 <script>
@@ -411,6 +500,13 @@
   const progressFill = document.getElementById('progress-fill');
   const timeCurrent = document.getElementById('time-current');
   const timeTotal = document.getElementById('time-total');
+
+  const lyricsOverlay = document.getElementById('lyrics-overlay');
+  const lyricsClose = document.getElementById('lyrics-close');
+  const lyricsBody = document.getElementById('lyrics-body');
+  const lyricsModalTitle = document.getElementById('lyrics-modal-title');
+  const lyricsPrompt = document.getElementById('lyrics-prompt');
+  const lyricsPromptText = document.getElementById('lyrics-prompt-text');
 
   let tracks = [];
   let currentIndex = -1;
@@ -445,6 +541,12 @@
 
       const tags = (t.tags || []).map(tag => `<span class="tag">${tag}</span>`).join('');
 
+      const lyricsBtn = t.hasLyrics
+        ? `<button class="track-lyrics-btn" data-suno-id="${t.sunoId}" title="View lyrics" onclick="event.stopPropagation(); showLyrics('${t.sunoId}', '${(t.title || 'Untitled').replace(/'/g, "\\'")}', '${(t.prompt || '').replace(/'/g, "\\'").replace(/\n/g, ' ')}')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h12M4 18h8"/></svg>
+           </button>`
+        : '';
+
       const sunoLink = t.sunoUrl
         ? `<a class="track-link" href="${t.sunoUrl}" target="_blank" rel="noopener" title="Open on Suno" onclick="event.stopPropagation()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
@@ -457,6 +559,7 @@
           <div class="track-title">${t.title || 'Untitled'}</div>
           <div class="track-meta">${t.artist || ''}${tags ? ' ' : ''}${tags}</div>
         </div>
+        ${lyricsBtn}
         ${sunoLink}
         <div class="track-duration">${t.duration || ''}</div>
       `;
@@ -594,6 +697,36 @@
         updatePlayingState();
       });
   }
+
+  // Lyrics modal
+  async function showLyrics(sunoId, title, prompt) {
+    lyricsModalTitle.textContent = title;
+    lyricsBody.textContent = 'Loading...';
+    lyricsOverlay.classList.add('open');
+
+    if (prompt) {
+      lyricsPrompt.style.display = '';
+      lyricsPromptText.textContent = prompt;
+    } else {
+      lyricsPrompt.style.display = 'none';
+    }
+
+    try {
+      const res = await fetch(`/api/tracks/${encodeURIComponent(sunoId)}/lyrics`);
+      const data = await res.json();
+      lyricsBody.textContent = data.lyrics || 'No lyrics available.';
+    } catch {
+      lyricsBody.textContent = 'Failed to load lyrics.';
+    }
+  }
+
+  lyricsClose.addEventListener('click', () => lyricsOverlay.classList.remove('open'));
+  lyricsOverlay.addEventListener('click', (e) => {
+    if (e.target === lyricsOverlay) lyricsOverlay.classList.remove('open');
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') lyricsOverlay.classList.remove('open');
+  });
 
   // Load tracks
   reloadTracks();

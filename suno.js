@@ -6,11 +6,13 @@ const https = require('https');
 
 const AUDIO_DIR = path.join(__dirname, 'data', 'audio');
 const IMAGE_DIR = path.join(__dirname, 'data', 'images');
+const LYRICS_DIR = path.join(__dirname, 'data', 'lyrics');
 const TRACKS_PATH = path.join(__dirname, 'data', 'tracks.json');
 
 function ensureDirs() {
   fs.mkdirSync(AUDIO_DIR, { recursive: true });
   fs.mkdirSync(IMAGE_DIR, { recursive: true });
+  fs.mkdirSync(LYRICS_DIR, { recursive: true });
 }
 
 function loadTracks() {
@@ -92,8 +94,54 @@ function resolveShareUrl(url) {
   });
 }
 
-// Scrape metadata from a Suno song page using fetch (server-side)
-// Returns { title, tags, duration, imageUrl }
+// Fetch song metadata from the self-hosted suno-api (gcui-art/suno-api)
+// Returns { title, tags, duration, imageUrl, lyrics, prompt } or null if unavailable
+async function fetchFromApi(songId) {
+  const apiUrl = process.env.SUNO_API_URL;
+  if (!apiUrl) return null;
+
+  const url = `${apiUrl.replace(/\/+$/, '')}/api/get?ids=${songId}`;
+  const headers = { 'Content-Type': 'application/json' };
+  if (process.env.SUNO_API_KEY) {
+    headers['Authorization'] = `Bearer ${process.env.SUNO_API_KEY}`;
+  }
+
+  try {
+    const res = await fetch(url, { headers });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const song = Array.isArray(data) ? data[0] : data;
+    if (!song) return null;
+
+    // Parse duration from seconds
+    let duration = '';
+    if (song.duration) {
+      const secs = parseFloat(song.duration);
+      duration = `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
+    }
+
+    // Parse tags from comma/space-separated string
+    let tags = [];
+    if (song.tags) {
+      tags = song.tags.split(/[,\n]+/).map(t => t.trim()).filter(Boolean);
+    }
+
+    return {
+      title: song.title || 'Untitled',
+      tags,
+      duration,
+      imageUrl: song.image_url || '',
+      lyrics: song.lyric || song.prompt || '',
+      prompt: song.gpt_description_prompt || '',
+    };
+  } catch (err) {
+    console.log(`  Suno API unavailable (${err.message}), falling back to scraping`);
+    return null;
+  }
+}
+
+// Scrape metadata from a Suno song page (fallback when API is unavailable)
+// Returns { title, tags, duration, imageUrl, lyrics, prompt }
 async function fetchPageMeta(songId) {
   const url = `https://suno.com/song/${songId}`;
   const res = await fetch(url);
@@ -114,7 +162,21 @@ async function fetchPageMeta(songId) {
     duration = `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
   }
 
-  return { title, tags, duration, imageUrl };
+  return { title, tags, duration, imageUrl, lyrics: '', prompt: '' };
+}
+
+// Save lyrics to a separate file for clean storage
+function saveLyrics(songId, lyrics) {
+  if (!lyrics) return;
+  const lyricsPath = path.join(LYRICS_DIR, `${songId}.txt`);
+  fs.writeFileSync(lyricsPath, lyrics);
+}
+
+// Load lyrics for a song
+function loadLyrics(songId) {
+  const lyricsPath = path.join(LYRICS_DIR, `${songId}.txt`);
+  if (!fs.existsSync(lyricsPath)) return '';
+  return fs.readFileSync(lyricsPath, 'utf8');
 }
 
 // Import a song by URL, song ID, or share link
@@ -135,11 +197,16 @@ async function importSong(input) {
     return null;
   }
 
-  // Fetch metadata from the page
+  // Try suno-api first, fall back to scraping
   console.log('Fetching metadata...');
-  const meta = await fetchPageMeta(songId);
+  let meta = await fetchFromApi(songId);
+  if (!meta) {
+    meta = await fetchPageMeta(songId);
+  }
   console.log(`  Title: ${meta.title}`);
   console.log(`  Tags: ${meta.tags.join(', ')}`);
+  if (meta.lyrics) console.log(`  Lyrics: ${meta.lyrics.substring(0, 60)}...`);
+  if (meta.prompt) console.log(`  Prompt: ${meta.prompt.substring(0, 60)}...`);
 
   // Download audio from CDN
   const audioFile = `${songId}.mp3`;
@@ -156,6 +223,11 @@ async function importSong(input) {
     await downloadFile(imageUrl, path.join(IMAGE_DIR, imageFile));
   }
 
+  // Save lyrics to file
+  if (meta.lyrics) {
+    saveLyrics(songId, meta.lyrics);
+  }
+
   const track = {
     sunoId: songId,
     title: meta.title,
@@ -165,6 +237,8 @@ async function importSong(input) {
     sunoUrl: `https://suno.com/song/${songId}`,
     audioUrl: `/audio/${audioFile}`,
     image: imageFile ? `/images/${imageFile}` : '',
+    hasLyrics: !!meta.lyrics,
+    prompt: meta.prompt,
   };
 
   tracks.push(track);
@@ -173,7 +247,7 @@ async function importSong(input) {
   return track;
 }
 
-module.exports = { importSong, loadTracks, saveTracks, parseSongId };
+module.exports = { importSong, loadTracks, saveTracks, parseSongId, loadLyrics };
 
 // CLI: node suno.js <url-or-id>
 if (require.main === module) {

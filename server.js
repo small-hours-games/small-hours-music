@@ -8,7 +8,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { importSong } = require('./suno');
+const { importSong, loadLyrics } = require('./suno');
 
 const PORT = process.env.PORT || 3000;
 
@@ -53,6 +53,12 @@ app.get('/api/tracks', (req, res) => {
   } catch {
     res.status(500).json({ error: 'Failed to load tracks' });
   }
+});
+
+// API: get lyrics for a track
+app.get('/api/tracks/:id/lyrics', (req, res) => {
+  const lyrics = loadLyrics(req.params.id);
+  res.json({ lyrics });
 });
 
 // API: import a song by Suno URL or song ID
