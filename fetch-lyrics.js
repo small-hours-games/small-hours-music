@@ -4,7 +4,7 @@ require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
-const { loadTracks, saveTracks } = require('./suno');
+const { loadTracks, saveTracks, formatDuration, parseTags } = require('./suno');
 
 const LYRICS_DIR = path.join(__dirname, 'data', 'lyrics');
 const API_URL = process.env.SUNO_API_URL;
@@ -43,11 +43,8 @@ async function main() {
       fs.writeFileSync(lyricsPath, meta.lyrics);
       track.hasLyrics = true;
       if (meta.prompt) track.prompt = meta.prompt;
-      if (meta.tags) track.tags = meta.tags.split(/[,\n]+/).map(t => t.trim()).filter(Boolean);
-      if (meta.duration) {
-        const secs = parseFloat(meta.duration);
-        track.duration = `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
-      }
+      if (meta.tags) track.tags = parseTags(meta.tags);
+      if (meta.duration) track.duration = formatDuration(meta.duration);
       fetched++;
       // Small delay to be nice to the API
       await new Promise(r => setTimeout(r, 500));

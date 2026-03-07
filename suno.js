@@ -9,6 +9,19 @@ const IMAGE_DIR = path.join(__dirname, 'data', 'images');
 const LYRICS_DIR = path.join(__dirname, 'data', 'lyrics');
 const TRACKS_PATH = path.join(__dirname, 'data', 'tracks.json');
 
+// Format seconds to "M:SS" string
+function formatDuration(seconds) {
+  const secs = parseFloat(seconds);
+  if (isNaN(secs)) return '0:00';
+  return `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
+}
+
+// Parse comma/newline-separated tag string into array
+function parseTags(tagString) {
+  if (!tagString) return [];
+  return tagString.split(/[,\n]+/).map(t => t.trim()).filter(Boolean);
+}
+
 function ensureDirs() {
   fs.mkdirSync(AUDIO_DIR, { recursive: true });
   fs.mkdirSync(IMAGE_DIR, { recursive: true });
@@ -113,23 +126,10 @@ async function fetchFromApi(songId) {
     const song = Array.isArray(data) ? data[0] : data;
     if (!song) return null;
 
-    // Parse duration from seconds
-    let duration = '';
-    if (song.duration) {
-      const secs = parseFloat(song.duration);
-      duration = `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
-    }
-
-    // Parse tags from comma/space-separated string
-    let tags = [];
-    if (song.tags) {
-      tags = song.tags.split(/[,\n]+/).map(t => t.trim()).filter(Boolean);
-    }
-
     return {
       title: song.title || 'Untitled',
-      tags,
-      duration,
+      tags: parseTags(song.tags),
+      duration: song.duration ? formatDuration(song.duration) : '',
       imageUrl: song.image_url || '',
       lyrics: song.lyric || song.prompt || '',
       prompt: song.gpt_description_prompt || '',
@@ -156,11 +156,7 @@ async function fetchPageMeta(songId) {
 
   // Duration from the playbar area (e.g. "3:11")
   const durationMatch = html.match(/"duration":\s*"?(\d+(?:\.\d+)?)"?/);
-  let duration = '';
-  if (durationMatch) {
-    const secs = parseFloat(durationMatch[1]);
-    duration = `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
-  }
+  const duration = durationMatch ? formatDuration(durationMatch[1]) : '';
 
   return { title, tags, duration, imageUrl, lyrics: '', prompt: '' };
 }
@@ -247,7 +243,7 @@ async function importSong(input) {
   return track;
 }
 
-module.exports = { importSong, loadTracks, saveTracks, parseSongId, loadLyrics };
+module.exports = { importSong, loadTracks, saveTracks, parseSongId, loadLyrics, formatDuration, parseTags, saveLyrics };
 
 // CLI: node suno.js <url-or-id>
 if (require.main === module) {

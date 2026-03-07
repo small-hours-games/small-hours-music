@@ -8,7 +8,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { importSong, loadLyrics } = require('./suno');
+const suno = require('./suno');
 
 const PORT = process.env.PORT || 3000;
 
@@ -28,18 +28,15 @@ function getLocalIP() {
   return '127.0.0.1';
 }
 
-const HOST_IP = getLocalIP();
-const SCHEME = USE_HTTPS ? 'https' : 'http';
-const DOMAIN = process.env.DOMAIN ? process.env.DOMAIN.trim() : null;
-const PUBLIC_HOST = DOMAIN || `${HOST_IP}:${PORT}`;
-const PUBLIC_SCHEME = DOMAIN ? 'https' : SCHEME;
-
 const app = express();
 app.use(express.json());
 
 // Serve downloaded audio and images from data/
 app.use('/audio',  express.static(path.join(__dirname, 'data', 'audio')));
 app.use('/images', express.static(path.join(__dirname, 'data', 'images')));
+
+// Validate that a song ID looks like a UUID (prevents path traversal)
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // API: list tracks
 app.get('/api/tracks', (req, res) => {
@@ -57,7 +54,10 @@ app.get('/api/tracks', (req, res) => {
 
 // API: get lyrics for a track
 app.get('/api/tracks/:id/lyrics', (req, res) => {
-  const lyrics = loadLyrics(req.params.id);
+  if (!UUID_RE.test(req.params.id)) {
+    return res.status(400).json({ error: 'Invalid track ID' });
+  }
+  const lyrics = suno.loadLyrics(req.params.id);
   res.json({ lyrics });
 });
 
@@ -66,7 +66,7 @@ app.post('/api/import', async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'url is required' });
   try {
-    const track = await importSong(url);
+    const track = await suno.importSong(url);
     if (!track) return res.json({ ok: true, skipped: true, message: 'Already imported' });
     res.json({ ok: true, track });
   } catch (err) {
@@ -78,11 +78,23 @@ app.post('/api/import', async (req, res) => {
 // Static files
 app.use(express.static(path.join(__dirname, 'public')));
 
-const server = USE_HTTPS
-  ? https.createServer({ cert: fs.readFileSync(CERT_PATH), key: fs.readFileSync(KEY_PATH) }, app)
-  : http.createServer(app);
+// Export app for testing
+module.exports = app;
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('\nSmall Hours Music running!\n');
-  console.log(`  ${PUBLIC_SCHEME}://${PUBLIC_HOST}/\n`);
-});
+// Only start the server when run directly
+if (require.main === module) {
+  const HOST_IP = getLocalIP();
+  const SCHEME = USE_HTTPS ? 'https' : 'http';
+  const DOMAIN = process.env.DOMAIN ? process.env.DOMAIN.trim() : null;
+  const PUBLIC_HOST = DOMAIN || `${HOST_IP}:${PORT}`;
+  const PUBLIC_SCHEME = DOMAIN ? 'https' : SCHEME;
+
+  const server = USE_HTTPS
+    ? https.createServer({ cert: fs.readFileSync(CERT_PATH), key: fs.readFileSync(KEY_PATH) }, app)
+    : http.createServer(app);
+
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log('\nSmall Hours Music running!\n');
+    console.log(`  ${PUBLIC_SCHEME}://${PUBLIC_HOST}/\n`);
+  });
+}
