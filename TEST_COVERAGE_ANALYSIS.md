@@ -2,208 +2,244 @@
 
 ## Current State
 
-**Coverage: 0%** — The codebase has no tests, no test framework, no test scripts, and no CI/CD pipeline.
+**Coverage: 0%** — The codebase has zero tests, no test framework, no test scripts, and no CI/CD pipeline.
 
-| File | Lines | Coverage | Risk Level |
-|------|-------|----------|------------|
-| `suno.js` | 266 | 0% | **High** |
-| `server.js` | 89 | 0% | **High** |
-| `fetch-lyrics.js` | 65 | 0% | Medium |
-| `bulk-import.js` | 99 | 0% | Medium |
-| `public/index.html` (JS) | ~245 | 0% | Medium |
+| File | Lines | Functions | Coverage | Risk |
+|------|-------|-----------|----------|------|
+| `suno.js` | 266 | 10 exported/internal | 0% | **High** |
+| `server.js` | 89 | 3 routes + 1 helper | 0% | **High** |
+| `fetch-lyrics.js` | 65 | 2 | 0% | Medium |
+| `bulk-import.js` | 99 | 1 | 0% | Medium |
+| `public/index.html` (inline JS) | ~245 | ~12 | 0% | Medium |
 
 ---
 
 ## Recommended Test Infrastructure
 
-**Framework:** [Vitest](https://vitest.dev/) — fast, zero-config, native ESM & CJS support, built-in coverage via `c8`/`istanbul`.
+**Framework:** [Vitest](https://vitest.dev/) — fast, zero-config, built-in coverage, great Node.js support.
 
 ```jsonc
-// Additions to package.json
-"devDependencies": {
-  "vitest": "^3.x",
-  "supertest": "^7.x"   // for HTTP endpoint testing
-}
+// package.json additions
 "scripts": {
   "test": "vitest run",
   "test:watch": "vitest",
   "test:coverage": "vitest run --coverage"
+},
+"devDependencies": {
+  "vitest": "^3.x",
+  "supertest": "^7.x"
 }
+```
+
+Suggested file structure:
+```
+test/
+  suno.test.js          # Unit tests for suno.js
+  server.test.js        # API endpoint tests
+  fetch-lyrics.test.js  # fetch-lyrics.js tests
 ```
 
 ---
 
-## Priority 1 — Pure Logic in `suno.js` (High Value, Easy to Test)
+## Priority 1 — Pure Logic in `suno.js` (High Value, Low Effort)
 
-These are pure/near-pure functions with no network or filesystem side-effects. They should be tested first because they are the backbone of the import pipeline and are trivial to unit test.
+These functions have no side effects and are the backbone of the import pipeline. Bugs here silently break all imports.
 
-### `parseSongId(input)` — lines 63-74
+### 1a. `parseSongId(input)` — suno.js:63-74
 
-Parses three distinct input formats. Any regression here silently breaks all imports.
+Parses three input formats (raw UUID, song URL, share URL). Already exported.
 
-**Suggested test cases:**
-- Raw UUID: `"7bc3fe4e-4850-4730-bc28-cb049f6d7b66"` → returns UUID
-- Direct song URL: `"https://suno.com/song/7bc3fe4e-4850-4730-bc28-cb049f6d7b66"` → returns UUID
-- Share URL: `"https://suno.com/s/wiZGYuKCdZhYOJcG"` → returns `null` (deferred to resolveShareUrl)
-- Whitespace padding: `"  7bc3fe4e-4850-4730-bc28-cb049f6d7b66  "` → returns UUID
-- Invalid input: `"not-a-url"` → returns `null`
-- Case insensitivity: uppercase UUID should still match
-- URL with trailing slash or query params
+| Input | Expected Output |
+|-------|-----------------|
+| `"7bc3fe4e-4850-4730-bc28-cb049f6d7b66"` | `"7bc3fe4e-4850-4730-bc28-cb049f6d7b66"` |
+| `"https://suno.com/song/7bc3fe4e-4850-4730-bc28-cb049f6d7b66"` | `"7bc3fe4e-..."` |
+| `"https://suno.com/song/7bc3fe4e-4850-4730-bc28-cb049f6d7b66?extra=1"` | `"7bc3fe4e-..."` |
+| `"  7bc3fe4e-4850-4730-bc28-cb049f6d7b66  "` (whitespace) | `"7bc3fe4e-..."` |
+| `"7BC3FE4E-4850-4730-BC28-CB049F6D7B66"` (uppercase) | returns UUID |
+| `"https://suno.com/s/wiZGYuKCdZhYOJcG"` (share URL) | `null` |
+| `"not-a-url"` | `null` |
+| `""` | `null` |
 
-### Duration formatting (inside `fetchFromApi` lines 117-121, `fetchPageMeta` lines 158-163)
+### 1b. Duration formatting (duplicated in 2 places — refactor candidate)
 
-The duration-seconds-to-`"M:SS"` conversion is duplicated in two places and has no dedicated function. This is a refactoring opportunity: extract a `formatDuration(seconds)` helper and test it.
+The seconds-to-`"M:SS"` conversion appears in both `fetchFromApi` (suno.js:117-121) and `fetchPageMeta` (suno.js:158-163), and again in `fetch-lyrics.js:48-49`. **Recommend extracting** a `formatDuration(seconds)` helper, then testing:
 
-**Suggested test cases:**
-- `0` → `"0:00"`
-- `61` → `"1:01"`
-- `189.7` → `"3:09"`
-- `3600` → `"60:00"`
+| Input | Expected |
+|-------|----------|
+| `0` | `"0:00"` |
+| `61` | `"1:01"` |
+| `189.7` | `"3:09"` |
+| `3600` | `"60:00"` |
+| `NaN` | `"0:00"` or handled |
 
-### Tag parsing (inside `fetchFromApi` line 126)
+### 1c. Tag parsing (duplicated in 2 places — refactor candidate)
 
-`song.tags.split(/[,\n]+/).map(t => t.trim()).filter(Boolean)` — also duplicated in `fetch-lyrics.js:46`. Worth extracting and testing.
+`song.tags.split(/[,\n]+/).map(t => t.trim()).filter(Boolean)` appears in both `fetchFromApi` (suno.js:126) and `fetch-lyrics.js:46`. Extract a `parseTags(tagString)` helper.
 
-**Suggested test cases:**
-- `"Rock, Pop, Indie"` → `["Rock", "Pop", "Indie"]`
-- `"Rock\nPop\nIndie"` → `["Rock", "Pop", "Indie"]`
-- `"Rock,,Pop,,"` → `["Rock", "Pop"]`
-- `""` → `[]`
+| Input | Expected |
+|-------|----------|
+| `"Rock, Pop, Indie"` | `["Rock", "Pop", "Indie"]` |
+| `"Rock\nPop\nIndie"` | `["Rock", "Pop", "Indie"]` |
+| `"Rock,,Pop,,"` | `["Rock", "Pop"]` |
+| `""` | `[]` |
 
 ---
 
-## Priority 2 — API Endpoints in `server.js` (High Value, Moderate Effort)
+## Priority 2 — API Endpoints in `server.js` (High Value, Medium Effort)
 
-Use `supertest` to test the Express app without starting a real server.
+Use `supertest` against the Express `app` (export it separately from `server.listen`).
 
-### `GET /api/tracks` — lines 45-56
+### 2a. `GET /api/tracks` — server.js:45-56
 
-**Suggested test cases:**
-- Returns `[]` when `tracks.json` doesn't exist
-- Returns parsed JSON array when `tracks.json` is valid
-- Returns `500` when `tracks.json` contains malformed JSON
+- Returns `[]` when `data/tracks.json` doesn't exist
+- Returns parsed array when file is valid JSON
+- Returns `500` when file contains malformed JSON
 
-### `GET /api/tracks/:id/lyrics` — lines 59-62
+### 2b. `GET /api/tracks/:id/lyrics` — server.js:59-62
 
-**Suggested test cases:**
-- Returns lyrics text when lyrics file exists
-- Returns empty string when lyrics file doesn't exist
-- Handles special characters in song ID (path traversal prevention — **security concern**)
+- Returns lyrics content when lyrics file exists for given ID
+- Returns empty string `""` when lyrics file is missing
+- **SECURITY**: Rejects path traversal attempts (e.g., `../../etc/passwd`) — see Security section
 
-### `POST /api/import` — lines 65-76
+### 2c. `POST /api/import` — server.js:65-76
 
-**Suggested test cases:**
-- Returns `400` when `url` body field is missing
-- Returns `{ ok: true, skipped: true }` for already-imported song
-- Returns `{ ok: true, track }` on successful import (mock `importSong`)
+- Returns `400` when `url` field is missing from body
+- Returns `{ ok: true, skipped: true }` for already-imported songs (mock `importSong` returning `null`)
+- Returns `{ ok: true, track: {...} }` on successful import (mock `importSong`)
 - Returns `500` with error message when `importSong` throws
 
+**Note:** To test the Express app with `supertest`, the `app` object needs to be exported separately from the `server.listen()` call. This requires a small refactor: move `app` creation to a separate export, and only call `listen()` when `require.main === module`.
+
 ---
 
-## Priority 3 — File I/O Functions in `suno.js` (Medium Value)
+## Priority 3 — File I/O Functions in `suno.js` (Medium Value, Low Effort)
 
-### `loadTracks()` / `saveTracks(tracks)` — lines 18-25
+Use a temporary directory (`fs.mkdtempSync`) so tests don't touch real data.
 
-**Suggested test cases (use a temp directory):**
+### 3a. `loadTracks()` / `saveTracks(tracks)` — suno.js:18-25
+
 - `loadTracks()` returns `[]` when file doesn't exist
-- `saveTracks([...])` writes valid JSON; `loadTracks()` round-trips correctly
-- `loadTracks()` throws on corrupted JSON (currently unhandled — potential bug)
+- `saveTracks([...])` followed by `loadTracks()` round-trips correctly
+- **Bug to test:** `loadTracks()` on corrupted JSON currently throws unhandled — should this return `[]` or throw?
 
-### `saveLyrics(songId, lyrics)` / `loadLyrics(songId)` — lines 169-180
+### 3b. `saveLyrics(songId, lyrics)` / `loadLyrics(songId)` — suno.js:169-180
 
-**Suggested test cases:**
-- Round-trip: save then load returns same content
-- `loadLyrics()` returns `""` for non-existent song
-- `saveLyrics()` with empty/null lyrics is a no-op
+- Round-trip: save then load returns identical text
+- `loadLyrics()` returns `""` for non-existent song ID
+- `saveLyrics()` with empty/null lyrics is a no-op (per the guard on line 170)
 
 ---
 
 ## Priority 4 — Network Functions (Medium Value, Requires Mocking)
 
-These functions make real HTTP requests. Test with mocked `fetch`/`https.get`.
+Mock `fetch` and `https.get` to avoid real network calls.
 
-### `resolveShareUrl(url)` — lines 77-95
-- Follows 3xx redirects and extracts song ID from final location
-- Returns error when redirect doesn't resolve to a song ID
-- Handles relative redirects
+### 4a. `fetchFromApi(songId)` — suno.js:99-141
 
-### `fetchFromApi(songId)` — lines 99-141
-- Returns structured metadata on success
-- Returns `null` when `SUNO_API_URL` is unset
+- Returns `null` when `SUNO_API_URL` env var is unset
+- Returns structured `{ title, tags, duration, imageUrl, lyrics, prompt }` on 200 response
 - Returns `null` on non-200 response
-- Returns `null` on network error (graceful fallback)
+- Returns `null` on network error (graceful fallback to scraping)
+- Sends `Authorization` header when `SUNO_API_KEY` is set
 
-### `fetchPageMeta(songId)` — lines 145-166
-- Extracts title from `og:title` meta tag
-- Extracts image from `og:image` meta tag
-- Extracts tags from `/style/` links
-- Falls back to defaults on missing metadata
+### 4b. `resolveShareUrl(url)` — suno.js:77-95
 
-### `downloadFile(url, destPath)` — lines 28-57
-- Follows redirects
-- Rejects on non-200 status
-- Cleans up partial file on error
+- Follows 3xx redirect and extracts song ID from `Location` header
+- Handles relative redirects (prefixes protocol/host)
+- Rejects when no redirect leads to a song ID
+
+### 4c. `fetchPageMeta(songId)` — suno.js:145-166
+
+- Extracts `og:title` from HTML
+- Extracts `og:image` from HTML
+- Parses `/style/` links into tags array
+- Falls back to `"Untitled"` / empty values when metadata is missing
+
+### 4d. `downloadFile(url, destPath)` — suno.js:28-57
+
+- Follows redirect chains
+- Rejects on non-200 status codes
+- Cleans up partial files on error
+- Handles both HTTP and HTTPS URLs
 
 ---
 
-## Priority 5 — Integration / Orchestration (Lower Priority)
+## Priority 5 — Integration Tests (Higher Effort)
 
-### `importSong(input)` — lines 183-248
-End-to-end integration test (with mocked network):
-- Full import pipeline: resolves ID → fetches metadata → downloads audio/image → saves track
-- Skips already-imported songs
-- Correctly builds the track object
+### 5a. `importSong(input)` — suno.js:183-248
 
-### `bulk-import.js` — `main()`
-- Counts imported/skipped/failed correctly
-- Continues past individual failures
+Full pipeline test with mocked network:
+- Resolves ID → fetches metadata → downloads audio/image → saves track → returns track object
+- Returns `null` for already-imported songs
+- Handles fallback from API to page scraping
 
-### `fetch-lyrics.js` — `main()`
-- Skips songs with existing lyrics files
-- Updates track metadata (hasLyrics, prompt, tags, duration)
+### 5b. `bulk-import.js` and `fetch-lyrics.js`
+
+- Script-level tests: verify counters (imported/skipped/failed) are correct
+- Verify that individual failures don't halt the loop
 
 ---
 
 ## Priority 6 — Frontend JavaScript (Lower Priority)
 
-The ~245 lines of JS in `public/index.html` are embedded inline, making them hard to test directly. Recommended approach:
+The ~245 lines of inline JS in `public/index.html` would need to be extracted to `public/app.js` before testing. Key functions:
 
-1. **Extract** the JS into `public/app.js`
-2. **Test** with a DOM testing library (e.g., `jsdom` via Vitest)
-
-### Key functions to test:
-- `formatTime(s)` — time formatting (`0` → `"0:00"`, `NaN` → `"0:00"`, `125` → `"2:05"`)
-- `renderTracks()` — generates correct DOM structure for track list
-- `playTrack(index)` — sets audio source, updates UI state
-- `doImport()` — sends correct API request, handles success/error/skip responses
-- Navigation: prev/next wrap-around behavior
+| Function | What to test |
+|----------|-------------|
+| `formatTime(s)` | `0` → `"0:00"`, `NaN` → `"0:00"`, `125` → `"2:05"` |
+| `renderTracks()` | Generates correct DOM elements for track list |
+| `playTrack(index)` | Sets `audio.src`, updates player UI |
+| `doImport()` | Sends correct POST, handles success/error/skip |
+| prev/next buttons | Wraps around at boundaries |
 
 ---
 
 ## Security Gaps Worth Testing
 
-1. **Path traversal in lyrics endpoint**: `GET /api/tracks/:id/lyrics` passes `req.params.id` directly to `loadLyrics()` which constructs a file path. A malicious ID like `../../etc/passwd` could read arbitrary files. Add a test to verify this is rejected.
+These should be high priority despite being listed separately — they represent real vulnerabilities.
 
-2. **XSS in track rendering**: Track titles and tags are inserted via `innerHTML` without escaping. A malicious title like `<img onerror=alert(1) src=x>` would execute. Add a test to verify HTML entities are escaped.
+### S1. Path Traversal in Lyrics Endpoint (Critical)
 
-3. **Import URL validation**: `POST /api/import` accepts any URL string. There's no validation that it's actually a Suno URL. Add a test that non-Suno URLs are rejected or handled safely.
+`GET /api/tracks/:id/lyrics` passes `req.params.id` directly into `loadLyrics()` which builds a file path:
+```js
+const lyricsPath = path.join(LYRICS_DIR, `${songId}.txt`);
+```
+
+An attacker could request `/api/tracks/..%2F..%2F..%2Fetc%2Fpasswd/lyrics` to read arbitrary files. **Fix:** validate that `songId` matches the UUID format before constructing the path.
+
+### S2. XSS via Track Metadata (Medium)
+
+In `index.html`, track titles and tags are injected via `innerHTML` without escaping:
+```js
+el.innerHTML = `<div class="track-title">${t.title || 'Untitled'}</div>`;
+```
+
+A malicious track title like `<img onerror=alert(1) src=x>` would execute JavaScript. **Fix:** use `textContent` or escape HTML entities.
+
+### S3. Import URL Validation (Low)
+
+`POST /api/import` accepts any string as the URL. While `parseSongId` + `resolveShareUrl` limit what can be processed, there's no explicit validation that the input is a Suno URL. Consider rejecting non-Suno domains upfront.
 
 ---
 
-## Summary of Recommendations
+## Summary
 
-| Priority | Area | Effort | Impact |
-|----------|------|--------|--------|
-| **P1** | `parseSongId` + extracted helpers | Low | High — prevents silent import failures |
-| **P2** | API endpoint tests with supertest | Medium | High — catches regressions in the web interface |
-| **P3** | File I/O round-trip tests | Low | Medium — ensures data persistence works |
-| **P4** | Network functions with mocking | Medium | Medium — validates external API integration |
-| **P5** | Integration tests for import pipeline | High | Medium — end-to-end confidence |
-| **P6** | Frontend JS (after extraction) | High | Low — UI logic is straightforward |
-| **Security** | Path traversal, XSS, input validation | Low | **Critical** — security vulnerabilities |
+| Priority | Area | Effort | Impact | Files |
+|----------|------|--------|--------|-------|
+| **P1** | `parseSongId` + extract helpers | Low | High | `test/suno.test.js` |
+| **P2** | API endpoint tests | Medium | High | `test/server.test.js` |
+| **P3** | File I/O round-trips | Low | Medium | `test/suno.test.js` |
+| **P4** | Network functions (mocked) | Medium | Medium | `test/suno.test.js` |
+| **P5** | Integration / orchestration | High | Medium | `test/integration.test.js` |
+| **P6** | Frontend JS (after extraction) | High | Low | `test/frontend.test.js` |
+| **S1-S3** | Security tests | **Low** | **Critical** | `test/security.test.js` |
 
-### Quick Wins
-1. Install `vitest` + `supertest`
-2. Write tests for `parseSongId()` — 30 minutes, catches the most common failure mode
-3. Write tests for API endpoints — 1 hour, covers the entire server surface area
-4. Add path traversal test for the lyrics endpoint — immediate security value
+### Recommended First Steps
+
+1. `npm install --save-dev vitest supertest`
+2. Add test scripts to `package.json`
+3. Refactor `server.js` to export `app` separately from `server.listen()`
+4. Extract `formatDuration()` and `parseTags()` helpers from duplicated code in `suno.js`
+5. Write P1 tests for `parseSongId`, `formatDuration`, `parseTags` — highest value for lowest effort
+6. Write S1 path traversal test + fix — immediate security value
+7. Write P2 API endpoint tests with supertest
