@@ -30,7 +30,12 @@ function ensureDirs() {
 
 function loadTracks() {
   if (!fs.existsSync(TRACKS_PATH)) return [];
-  return JSON.parse(fs.readFileSync(TRACKS_PATH, 'utf8'));
+  try {
+    return JSON.parse(fs.readFileSync(TRACKS_PATH, 'utf8'));
+  } catch (err) {
+    console.error('Warning: tracks.json is corrupted, returning empty list:', err.message);
+    return [];
+  }
 }
 
 function saveTracks(tracks) {
@@ -44,6 +49,7 @@ function downloadFile(url, destPath) {
     const parsed = new URL(url);
     const options = {
       hostname: parsed.hostname,
+      port: parsed.port,
       path: parsed.pathname + parsed.search,
       headers: { 'User-Agent': 'Mozilla/5.0' }
     };
@@ -243,7 +249,7 @@ async function importSong(input) {
   return track;
 }
 
-module.exports = { importSong, loadTracks, saveTracks, parseSongId, loadLyrics, formatDuration, parseTags, saveLyrics };
+module.exports = { importSong, loadTracks, saveTracks, parseSongId, loadLyrics, formatDuration, parseTags, saveLyrics, fetchFromApi, fetchPageMeta, resolveShareUrl, downloadFile };
 
 // CLI: node suno.js <url-or-id>
 if (require.main === module) {

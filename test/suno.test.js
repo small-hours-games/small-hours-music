@@ -165,6 +165,11 @@ describe('loadTracks / saveTracks', () => {
     expect(loadTracks()).toEqual(tracks);
   });
 
+  it('loadTracks returns [] when tracks.json is corrupted', () => {
+    fs.writeFileSync(TRACKS_PATH, '{corrupted json!!!');
+    expect(loadTracks()).toEqual([]);
+  });
+
   it('saveTracks writes valid JSON with trailing newline', () => {
     saveTracks([{ title: 'Test' }]);
     const raw = fs.readFileSync(TRACKS_PATH, 'utf8');

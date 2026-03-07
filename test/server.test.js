@@ -117,6 +117,31 @@ describe('POST /api/import', () => {
     expect(res.body.error).toBe('url is required');
   });
 
+  it('rejects non-Suno URLs', async () => {
+    const res = await request(app)
+      .post('/api/import')
+      .send({ url: 'https://evil.com/malicious' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Invalid Suno URL or song ID');
+  });
+
+  it('rejects random strings', async () => {
+    const res = await request(app)
+      .post('/api/import')
+      .send({ url: 'not-a-url-at-all' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Invalid Suno URL or song ID');
+  });
+
+  it('accepts raw UUID as import input', async () => {
+    vi.spyOn(suno, 'importSong').mockResolvedValue({ sunoId: 'test', title: 'T' });
+    const res = await request(app)
+      .post('/api/import')
+      .send({ url: '7bc3fe4e-4850-4730-bc28-cb049f6d7b66' });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+  });
+
   it('returns skipped when song is already imported', async () => {
     vi.spyOn(suno, 'importSong').mockResolvedValue(null);
     const res = await request(app)

@@ -37,6 +37,7 @@ app.use('/images', express.static(path.join(__dirname, 'data', 'images')));
 
 // Validate that a song ID looks like a UUID (prevents path traversal)
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SUNO_URL_RE = /^https?:\/\/(www\.)?suno\.com\//i;
 
 // API: list tracks
 app.get('/api/tracks', (req, res) => {
@@ -65,6 +66,9 @@ app.get('/api/tracks/:id/lyrics', (req, res) => {
 app.post('/api/import', async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'url is required' });
+  if (!SUNO_URL_RE.test(url) && !UUID_RE.test(url.trim())) {
+    return res.status(400).json({ error: 'Invalid Suno URL or song ID' });
+  }
   try {
     const track = await suno.importSong(url);
     if (!track) return res.json({ ok: true, skipped: true, message: 'Already imported' });
